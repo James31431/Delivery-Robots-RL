@@ -4,3 +4,10 @@ __pycache__/
 .mypy_cache/
 .venv/
 *.egg-info/
+
+# IDE / agent
+.claude/
+
+# Generated artifacts
+results/
+training_curves*.png
