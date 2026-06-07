@@ -1,6 +1,12 @@
-"""Central configuration for training/evaluation runs."""
+"""Central configuration for training/evaluation runs.
 
-NUM_TRAINING_EPISODES = 1_000_000
+These values are tuned for the per-robot partial-observation pipeline
+(``--env complex`` with MultiAgentTabularQ). The simple env pipeline still
+works fine with them too — it's smaller and easily converges within this
+episode budget.
+"""
+
+NUM_TRAINING_EPISODES = 30_000
 NUM_EVALUATION_EPISODES = 100
 MAX_STEPS = 50  # used by the SimpleBuildingEnv pipeline; complex pipeline
                 # overrides via ComplexEnvConfig(max_steps=...)
@@ -11,7 +17,7 @@ EVAL_SEED = 123
 LEARNING_RATE = 0.3
 DISCOUNT_FACTOR = 0.90
 EPSILON = 1.0
-EPSILON_DECAY = 0.999_999
+EPSILON_DECAY = 0.9995  # reaches min_epsilon around episode 6000
 MIN_EPSILON = 0.05
 
 Q_TABLE_PATH = "q_table.pkl"
