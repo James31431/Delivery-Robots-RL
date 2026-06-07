@@ -144,7 +144,7 @@ def run_complex() -> None:
     actions internally. OptimalAgent is intentionally omitted (hand-coded
     for SimpleBuildingEnv's state shape).
     """
-    env_cfg = ComplexEnvConfig(obs_mode="per_robot", max_steps=300)
+    env_cfg = ComplexEnvConfig(obs_mode="per_robot", max_steps=500)
     env = ComplexBuildingEnv(config=env_cfg, seed=config.TRAIN_SEED)
     agent = MultiAgentTabularQ(
         per_robot_action_size=env.per_robot_action_size,
