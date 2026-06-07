@@ -32,12 +32,14 @@ got to optimal.
 ```
 Delivery-Robots-RL/
 ├── config.py                  # Hyperparameters, seeds, output paths
-├── main.py                    # Train → save → compare → plot
+├── main.py                    # Train → save → compare → plot (simple env)
 ├── run_experiments.py         # Multi-seed sweep + multi-seed plots
+├── demo_complex_env.py        # Demo: tabular Q-learning vs random on ComplexBuildingEnv
 ├── requirements.txt           # Runtime deps (numpy, matplotlib)
 ├── requirements-dev.txt       # +pytest
 ├── environment/
-│   └── simple_env.py          # SimpleBuildingEnv
+│   ├── simple_env.py          # SimpleBuildingEnv  (small, deterministic)
+│   └── complex_env.py         # ComplexBuildingEnv (stochastic, multi-robot, multi-task)
 ├── rl/
 │   ├── interfaces.py          # Lightweight Protocols (Env, Agent)
 │   ├── q_learning_agent.py    # Tabular Q-learning
@@ -153,6 +155,71 @@ environment — a sanity check that tabular Q-learning is sufficient here.
 
 After running `main.py`, see `training_curves.png` for reward / success-rate /
 steps / ε-decay curves over training.
+
+---
+
+## Complex Environment (`ComplexBuildingEnv`)
+
+A harder sibling to `SimpleBuildingEnv` lives in
+[environment/complex_env.py](environment/complex_env.py). It is **not** a
+replacement — both envs satisfy `EnvironmentProtocol` so `train_agent` and
+`evaluate_agent` accept either unchanged.
+
+### Why two environments?
+
+| Aspect              | `SimpleBuildingEnv`                  | `ComplexBuildingEnv`                                     |
+|---------------------|--------------------------------------|-----------------------------------------------------------|
+| Floors              | 5                                    | 8 (configurable)                                          |
+| Robots              | 1                                    | 2 (configurable, 1–4)                                     |
+| Elevators           | 1                                    | 2 (configurable)                                          |
+| Tasks               | 1 per episode                        | Refilling queue (default 3 active, 6 total per episode)   |
+| Dynamics            | Deterministic                        | Stochastic: elevator delay, breakdowns, task spawn        |
+| State space         | ~400                                 | Combinatorially large                                     |
+| Flat action space   | 6                                    | `per_robot_actions ** n_robots` (576 with defaults)       |
+| Suited for          | Tabular Q-learning (provably solves) | Function approximation (DQN) — tabular fails here         |
+
+### Stochastic dynamics
+
+- **Elevator delay** (`p_elevator_delay`, default `0.10`): elevator move turns
+  into a no-op for one step.
+- **Breakdowns** (`p_breakdown`, default `0.01`): elevator becomes unusable
+  for `breakdown_duration` steps; any robot inside is ejected at the current
+  floor (extra penalty if they were carrying a task).
+- **Task spawn** (`p_new_task`, default `0.20`): when a slot is empty, a new
+  task spawns with this probability per step, up to `total_task_budget`.
+
+### State and action shape
+
+```python
+from environment.complex_env import ComplexBuildingEnv, ComplexEnvConfig
+
+env = ComplexBuildingEnv(config=ComplexEnvConfig(), seed=42)
+state = env.reset()       # tuple of tuples — hashable, dict-friendly
+vec   = env.to_vector()   # np.ndarray, float32 — for function approximation
+```
+
+Actions can be passed two ways:
+
+- A flat `int` in `[0, flat_action_space_size)` — agents that already speak
+  the `AgentProtocol` (e.g. the tabular Q-agent) just keep working
+- A per-robot sequence of length `n_robots` — natural for multi-agent agents
+
+### Reward shape
+
+`+100` per delivery, `+10` per pickup (sparse-reward shaping),
+`-0.5` per robot per step, `-2` per `wait`, `-5` per invalid sub-action,
+`-20` if a breakdown ejects a robot that was carrying a task.
+
+### Try it
+
+```bash
+python demo_complex_env.py
+```
+
+Trains the existing tabular Q-agent for 300 episodes on `ComplexBuildingEnv`
+and compares it to a random baseline. Expected outcome: Q-learning barely
+beats (or ties) random — the state space is too big for a tabular table to
+generalize. This is the motivation for a follow-up DQN issue.
 
 ---
 
