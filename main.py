@@ -26,6 +26,7 @@ import config
 from environment.complex_env import ComplexBuildingEnv, ComplexEnvConfig
 from environment.simple_env import SimpleBuildingEnv
 from rl.baselines import OptimalAgent, RandomAgent
+from rl.multi_agent_tabular import MultiAgentTabularQ
 from rl.q_learning_agent import QLearningAgent
 from rl.train import train_agent
 from rl.evaluate import evaluate_agent
@@ -51,7 +52,7 @@ def _build_q_agent(action_space_size: int) -> QLearningAgent:
     )
 
 
-def _save_artifacts(agent: QLearningAgent, stats: Dict[str, Any]) -> str:
+def _save_artifacts(agent: Any, stats: Dict[str, Any]) -> str:
     q_path = os.path.join(PROJECT_ROOT, config.Q_TABLE_PATH)
     agent.save(q_path)
     print(f"\nSaved Q-table to {q_path}")
@@ -134,19 +135,32 @@ def run_simple() -> None:
 
 
 def run_complex() -> None:
-    """Pipeline against ComplexBuildingEnv: Q-Learning vs Random.
+    """Pipeline against ComplexBuildingEnv with per-robot partial observability.
 
-    OptimalAgent is intentionally omitted — it is hand-coded for the simple
-    env's 5-tuple state and would crash on the complex env's tuple-of-tuples
-    state shape.
+    Uses ``obs_mode='per_robot'`` so each robot's observation is a small
+    local tuple, and a multi-agent tabular Q-learner (shared Q-table) acts
+    independently for each robot. The Random baseline keeps the same env
+    config but emits a flat action int — the env decodes it into per-robot
+    actions internally. OptimalAgent is intentionally omitted (hand-coded
+    for SimpleBuildingEnv's state shape).
     """
-    env_cfg = ComplexEnvConfig()  # all defaults; tune via kwargs to ComplexEnvConfig
+    env_cfg = ComplexEnvConfig(obs_mode="per_robot", max_steps=300)
     env = ComplexBuildingEnv(config=env_cfg, seed=config.TRAIN_SEED)
-    agent = _build_q_agent(env.action_space_size)
+    agent = MultiAgentTabularQ(
+        per_robot_action_size=env.per_robot_action_size,
+        n_robots=env_cfg.n_robots,
+        learning_rate=config.LEARNING_RATE,
+        discount_factor=config.DISCOUNT_FACTOR,
+        epsilon=config.EPSILON,
+        epsilon_decay=config.EPSILON_DECAY,
+        min_epsilon=config.MIN_EPSILON,
+        seed=config.TRAIN_SEED,
+    )
 
-    print("Training Q-learning agent on ComplexBuildingEnv...")
+    print("Training MultiAgentTabularQ on ComplexBuildingEnv (per-robot obs)...")
     print(
-        f"  flat_action_space_size={env.flat_action_space_size}, "
+        f"  per_robot_action_size={env.per_robot_action_size}, "
+        f"flat_action_space_size={env.flat_action_space_size}, "
         f"max_steps={env_cfg.max_steps}"
     )
     agent, stats = train_agent(
@@ -162,7 +176,7 @@ def run_complex() -> None:
         return ComplexBuildingEnv(config=env_cfg, seed=config.EVAL_SEED)
 
     agents = {
-        "Q-Learning": agent,
+        "MultiAgent-Q": agent,
         "Random": RandomAgent(env.action_space_size, seed=config.EVAL_SEED),
     }
 

@@ -59,6 +59,11 @@ class ComplexEnvConfig:
     breakdown_duration: int = 5     # steps the elevator stays out of service
     p_new_task: float = 0.20        # chance per step to refill an INACTIVE slot
 
+    # Observation mode: "full" returns the global tuple-of-tuples state;
+    # "per_robot" returns a tuple of per-robot local observations (a POMDP),
+    # which makes the observation space small enough for tabular methods.
+    obs_mode: str = "full"
+
     # Reward weights
     reward_delivery: float = 100.0
     reward_pickup: float = 10.0
@@ -86,8 +91,12 @@ class ComplexBuildingEnv:
             config = ComplexEnvConfig(**kwargs)
         elif kwargs:
             raise TypeError("Pass either a ComplexEnvConfig or kwargs, not both.")
-        if not (1 <= config.n_robots <= 4):
+        if not 1 <= config.n_robots <= 4:
             raise ValueError("n_robots must be in 1..4")
+        if config.obs_mode not in ("full", "per_robot"):
+            raise ValueError(
+                f"obs_mode must be 'full' or 'per_robot', got {config.obs_mode!r}"
+            )
         self.cfg = config
         self.max_steps = config.max_steps
         self._rng = random.Random(seed)
@@ -198,6 +207,22 @@ class ComplexBuildingEnv:
     # --- State accessors ---------------------------------------------------
 
     def get_state(self) -> State:
+        """Return the agent-facing observation.
+
+        In ``obs_mode='full'`` this returns the joint tuple-of-tuples — the
+        same shape across the whole multi-agent team. In ``obs_mode='per_robot'``
+        it returns a tuple of per-robot local observations (one per robot),
+        which is the right shape for a multi-agent tabular agent with a
+        shared Q-table.
+
+        ``self.steps`` is intentionally NOT included in the hashable state.
+        Including a monotonic step counter would make every state unique and
+        bloat the Q-table without helping decisions. ``to_vector()`` does
+        include it because function approximators can use it productively.
+        """
+        if self.cfg.obs_mode == "per_robot":
+            return self.get_observations()
+
         parts: List[Tuple] = []
         for r in self.robots:
             parts.append((r["floor"], r["inside_elevator"], r["carrying_task"]))
@@ -205,8 +230,48 @@ class ComplexBuildingEnv:
             parts.append((e["floor"], e["direction"], e["broken_remaining"]))
         for t in self.tasks:
             parts.append((t["pickup_floor"], t["delivery_floor"], t["status"]))
-        parts.append((self.steps,))
         return tuple(parts)
+
+    def get_observations(self) -> Tuple[Tuple[int, ...], ...]:
+        """Per-robot local observations. One small tuple per robot."""
+        return tuple(self._per_robot_obs(i) for i in range(self.cfg.n_robots))
+
+    def _per_robot_obs(self, robot_idx: int) -> Tuple[int, ...]:
+        """Compact local observation for one robot. Designed to be the same
+        shape regardless of which robot's perspective it is, so a single
+        shared Q-table can be used across all robots.
+
+        Fields (for n_elevators=2): own_floor, own_inside_elevator,
+        own_carrying_task, elev0_floor, elev0_broken, elev1_floor,
+        elev1_broken, pickup_target (-1 if carrying or none), delivery_target
+        (-1 if not carrying).
+        """
+        r = self.robots[robot_idx]
+        obs: List[int] = [
+            r["floor"],
+            r["inside_elevator"],
+            r["carrying_task"],
+        ]
+        for e in self.elevators:
+            obs.append(e["floor"])
+            obs.append(1 if e["broken_remaining"] > 0 else 0)
+
+        if r["carrying_task"] != NO_TASK:
+            obs.append(-1)
+            obs.append(self.tasks[r["carrying_task"]]["delivery_floor"])
+        else:
+            best_pickup = -1
+            best_dist: Optional[int] = None
+            for t in self.tasks:
+                if t["status"] != TASK_PENDING:
+                    continue
+                d = abs(t["pickup_floor"] - r["floor"])
+                if best_dist is None or d < best_dist:
+                    best_pickup = t["pickup_floor"]
+                    best_dist = d
+            obs.append(best_pickup)
+            obs.append(-1)
+        return tuple(obs)
 
     def to_vector(self) -> np.ndarray:
         """Flat float32 array suitable for function-approximation agents."""

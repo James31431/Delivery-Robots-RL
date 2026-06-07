@@ -41,7 +41,9 @@ def test_reset_returns_state_with_expected_shape():
     env = ComplexBuildingEnv(seed=0)
     state = env.reset()
     assert isinstance(state, tuple)
-    expected_parts = env.cfg.n_robots + env.cfg.n_elevators + env.cfg.n_tasks + 1
+    # Per-entity tuples only; the step counter is intentionally excluded so
+    # tabular Q-tables can revisit states (see ComplexBuildingEnv.get_state).
+    expected_parts = env.cfg.n_robots + env.cfg.n_elevators + env.cfg.n_tasks
     assert len(state) == expected_parts
 
 
