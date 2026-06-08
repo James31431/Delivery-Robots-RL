@@ -3,3 +3,4 @@
 # locally (numpy 2.x, matplotlib 3.10).
 numpy>=1.21
 matplotlib>=3.5
+pygame>=2.5
