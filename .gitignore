@@ -11,5 +11,5 @@ __pycache__/
 # Generated artifacts
 results/
 training_curves*.png
-q_table.pkl
-training_stats.csv
+q_table*.pkl
+training_stats*.csv

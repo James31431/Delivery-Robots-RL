@@ -52,11 +52,11 @@ def _build_q_agent(action_space_size: int) -> QLearningAgent:
     )
 
 
-def _save_artifacts(agent: Any, stats: Dict[str, Any]) -> str:
-    q_path = os.path.join(PROJECT_ROOT, config.Q_TABLE_PATH)
+def _save_artifacts(agent: Any, stats: Dict[str, Any], env_name: str) -> str:
+    q_path = os.path.join(PROJECT_ROOT, config.q_table_path(env_name))
     agent.save(q_path)
     print(f"\nSaved Q-table to {q_path}")
-    stats_path = os.path.join(PROJECT_ROOT, config.TRAINING_STATS_PATH)
+    stats_path = os.path.join(PROJECT_ROOT, config.training_stats_path(env_name))
     save_training_stats(stats, stats_path)
     print(f"Saved training stats to {stats_path}")
     return stats_path
@@ -93,8 +93,8 @@ def _print_comparison(results: Dict[str, Dict[str, float]]) -> None:
     print("=" * 50)
 
 
-def _plot(stats_path: str, optimal_reward: Optional[float]) -> None:
-    plot_path = os.path.join(PROJECT_ROOT, "training_curves.png")
+def _plot(stats_path: str, optimal_reward: Optional[float], env_name: str) -> None:
+    plot_path = os.path.join(PROJECT_ROOT, config.training_curves_path(env_name))
     plot_training_curves(
         stats_path=stats_path,
         output_path=plot_path,
@@ -118,7 +118,7 @@ def run_simple() -> None:
         max_steps=config.MAX_STEPS,
     )
 
-    stats_path = _save_artifacts(agent, stats)
+    stats_path = _save_artifacts(agent, stats, "simple")
 
     def fresh_env() -> SimpleBuildingEnv:
         return SimpleBuildingEnv(max_steps=config.MAX_STEPS, seed=config.EVAL_SEED)
@@ -131,7 +131,7 @@ def run_simple() -> None:
 
     results = _evaluate_all(agents, fresh_env, config.MAX_STEPS)
     _print_comparison(results)
-    _plot(stats_path, optimal_reward=results["Optimal"]["average_reward"])
+    _plot(stats_path, results["Optimal"]["average_reward"], "simple")
 
 
 def run_complex() -> None:
@@ -170,7 +170,7 @@ def run_complex() -> None:
         max_steps=env_cfg.max_steps,
     )
 
-    stats_path = _save_artifacts(agent, stats)
+    stats_path = _save_artifacts(agent, stats, "complex")
 
     def fresh_env() -> ComplexBuildingEnv:
         return ComplexBuildingEnv(config=env_cfg, seed=config.EVAL_SEED)
@@ -182,7 +182,7 @@ def run_complex() -> None:
 
     results = _evaluate_all(agents, fresh_env, env_cfg.max_steps)
     _print_comparison(results)
-    _plot(stats_path, optimal_reward=None)
+    _plot(stats_path, None, "complex")
 
 
 # --- Entry point -----------------------------------------------------------

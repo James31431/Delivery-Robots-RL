@@ -113,33 +113,45 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
 # 4. Train + evaluate + compare against baselines + save plot
-python main.py
+python main.py --env simple      # default
+python main.py --env complex     # the harder, stochastic, multi-robot env
 
-# 5. Run tests
+# 5. Evaluate an ALREADY-trained table (no retraining) and compare
+#    greedy / epsilon-greedy / softmax action selection vs Random
+python evaluate_saved.py --env simple
+python evaluate_saved.py --env complex
+python evaluate_saved.py --env complex --seed 42 --episodes 200 --temp 2.0
+
+# 6. Run tests
 pytest
 
-# 6. Multi-seed experiment (writes to results/)
+# 7. Multi-seed experiment (writes to results/)
 python run_experiments.py
 ```
 
 ### Outputs (gitignored)
 
-| File                    | Produced by              | What it is                              |
-|-------------------------|--------------------------|-----------------------------------------|
-| `q_table.pkl`           | `main.py`                | Pickled Q-table                         |
-| `training_stats.csv`    | `main.py`                | Per-episode reward / steps / success / ε |
-| `training_curves.png`   | `main.py`                | 2×2 figure of training curves           |
-| `results/<run>/`        | `run_experiments.py`     | One CSV per (seed, agent) + plots       |
+Artifacts are **namespaced per environment** so the simple and complex
+pipelines never overwrite each other (`{env}` is `simple` or `complex`):
 
-All generated artifacts are gitignored.
+| File                        | Produced by              | What it is                               |
+|-----------------------------|--------------------------|------------------------------------------|
+| `q_table_{env}.pkl`         | `main.py`                | Pickled Q-table                          |
+| `training_stats_{env}.csv`  | `main.py`                | Per-episode reward / steps / success / ε |
+| `training_curves_{env}.png` | `main.py`                | 2×2 figure of training curves            |
+| `results/<run>/`            | `run_experiments.py`     | One CSV per (seed, agent) + plots        |
+
+The path helpers `config.q_table_path(env)`, `config.training_stats_path(env)`,
+and `config.training_curves_path(env)` produce these names. All generated
+artifacts are gitignored.
 
 ### Plotting standalone
 
 `utils/plot.py` is also a CLI for re-plotting an existing CSV:
 
 ```bash
-python -m utils.plot --stats training_stats.csv --out training_curves.png --window 100
-python -m utils.plot --stats training_stats.csv --optimal 95.52   # add a reference line
+python -m utils.plot --stats training_stats_complex.csv --out training_curves_complex.png --window 100
+python -m utils.plot --stats training_stats_simple.csv --optimal 95.52   # add a reference line
 ```
 
 ---
@@ -411,6 +423,32 @@ within 300 steps) is rare under defaults — that bar is intentionally
 unforgiving so the metric scales with future improvements (more training,
 reward shaping, DQN, …).
 
+### Action selection matters more than the seed
+
+Evaluating the trained table (`evaluate_saved.py --env complex`, 50k-episode
+run, 500 max steps, held-out seed 123) reveals that **how you query the
+policy dominates the result**:
+
+| Mode                  | Success % | Avg reward |
+|-----------------------|-----------|------------|
+| greedy (argmax-Q)     | 11%       | -1174      |
+| ε-greedy (ε=0.37)     | 80%       | -283       |
+| **softmax (temp≈2)**  | **93%**   | **-73**    |
+| Random baseline       | 0%        | -2074      |
+
+Greedy collapses while softmax sampling reaches 93%. This is **not** an
+overfitting/generalization gap: holding the mode fixed, the train seed (42)
+and held-out seed (123) score almost identically (greedy 14% vs 11%;
+ε-greedy 79% vs 80%), and 0% of observations are unseen at evaluation. The
+cause is the **POMDP**: under partial observation a memoryless policy suffers
+perceptual aliasing, where one observation maps to several true states, so a
+deterministic greedy policy gets trapped in stall/oscillation loops. A
+*stochastic* policy (ε-greedy, and especially Q-weighted softmax) hedges
+across the aliased states and escapes them. By contrast, on the fully-observed
+`SimpleBuildingEnv`, greedy is already optimal and stochasticity only hurts —
+exactly the MDP-vs-POMDP distinction. Run `evaluate_saved.py` on both envs to
+reproduce.
+
 ### POMDP caveat
 
 Per-robot observation hides things the full state knows: the other
@@ -470,3 +508,12 @@ Seeds are set in [config.py](config.py):
   is a config knob on `ComplexBuildingEnv`. Agents stay simple; the env
   decides what each agent can see. This makes it easy to A/B-test
   different observation designs without touching agent code.
+
+---
+
+## AI Disclaimer
+
+This project was developed with the assistance of [Claude Code](https://claude.com/claude-code),
+Anthropic's agentic coding tool. It was used to help with implementation,
+debugging, running experiments, and documentation. All design decisions,
+results, and conclusions were reviewed and validated by the author.
