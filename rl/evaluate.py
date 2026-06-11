@@ -7,17 +7,29 @@ from typing import Any, Dict
 from rl.interfaces import AgentProtocol, EnvironmentProtocol
 
 
+def _greedy_action(agent: AgentProtocol, state):
+    """Query an agent greedily, tolerating agents without a ``greedy`` kwarg."""
+    try:
+        return agent.choose_action(state, greedy=True)  # type: ignore[call-arg]
+    except TypeError:
+        return agent.choose_action(state)
+
+
 def evaluate_agent(
     env: EnvironmentProtocol,
     agent: AgentProtocol,
     episodes: int = 100,
     max_steps: int = 50,
     render: bool = False,
+    temperature: float = None,
 ) -> Dict[str, float]:
-    """Run ``agent`` on ``env`` with exploration disabled and report metrics.
+    """Run ``agent`` on ``env`` and report metrics.
 
-    If the agent has an ``epsilon`` attribute, it is temporarily set to 0 and
-    restored afterwards. Baseline policies without epsilon work fine too.
+    By default actions are greedy (exploration disabled): if the agent has an
+    ``epsilon`` attribute it is temporarily set to 0 and restored afterwards.
+    If ``temperature`` is given, the agent is queried with Boltzmann/softmax
+    sampling instead (agents that don't support it fall back to greedy).
+    Baseline policies without epsilon work fine too.
     """
     total_rewards = 0.0
     successes = 0
@@ -37,11 +49,14 @@ def evaluate_agent(
             success = False
 
             while not done and ep_steps < max_steps:
-                # Prefer greedy=True if the agent supports it.
-                try:
-                    action = agent.choose_action(state, greedy=True)  # type: ignore[call-arg]
-                except TypeError:
-                    action = agent.choose_action(state)
+                if temperature is not None:
+                    # Boltzmann/softmax query; fall back to greedy, then plain.
+                    try:
+                        action = agent.choose_action(state, temperature=temperature)  # type: ignore[call-arg]
+                    except TypeError:
+                        action = _greedy_action(agent, state)
+                else:
+                    action = _greedy_action(agent, state)
                 state, reward, done, info = env.step(action)
                 ep_reward += reward
                 ep_steps += 1

@@ -67,6 +67,7 @@ def _evaluate_all(
     agents: Dict[str, Any],
     fresh_env_fn: Callable[[], Any],
     max_steps: int,
+    temperature: Optional[float] = None,
 ) -> Dict[str, Dict[str, float]]:
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in agents.items():
@@ -76,6 +77,7 @@ def _evaluate_all(
             agent,
             episodes=config.NUM_EVALUATION_EPISODES,
             max_steps=max_steps,
+            temperature=temperature,
         )
     return results
 
@@ -106,7 +108,7 @@ def _plot(stats_path: str, optimal_reward: Optional[float], env_name: str) -> No
 
 # --- Pipelines -------------------------------------------------------------
 
-def run_simple() -> None:
+def run_simple(temperature: Optional[float] = None) -> None:
     """Pipeline against SimpleBuildingEnv: Q-Learning vs Random vs Optimal."""
     env = SimpleBuildingEnv(max_steps=config.MAX_STEPS, seed=config.TRAIN_SEED)
     agent = _build_q_agent(env.action_space_size)
@@ -130,12 +132,16 @@ def run_simple() -> None:
         "Optimal": OptimalAgent(env.action_space_size),
     }
 
-    results = _evaluate_all(agents, fresh_env, config.MAX_STEPS)
+    results = _evaluate_all(agents, fresh_env, config.MAX_STEPS, temperature)
     _print_comparison(results)
     _plot(stats_path, results["Optimal"]["average_reward"], "simple")
 
 
-def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
+def run_complex(
+    temperature: Optional[float] = None,
+    use_memory: bool = False,
+    use_linear: bool = False,
+) -> None:
     """Pipeline against ComplexBuildingEnv with per-robot partial observability.
 
     Uses ``obs_mode='per_robot'`` so each robot's observation is a small
@@ -213,7 +219,7 @@ def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
         "Random": RandomAgent(env.action_space_size, seed=config.EVAL_SEED),
     }
 
-    results = _evaluate_all(agents, fresh_env, env_cfg.max_steps)
+    results = _evaluate_all(agents, fresh_env, env_cfg.max_steps, temperature)
     _print_comparison(results)
     _plot(stats_path, None, variant)
 
@@ -244,12 +250,23 @@ def main() -> None:
              "(LinearMultiAgentQ) instead of the tabular shared Q-table; "
              "saves under the 'complex_linear' artifacts.",
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="If set, evaluate with Boltzmann/softmax action selection at this "
+             "temperature (e.g. 2.0) instead of greedy argmax.",
+    )
     args = parser.parse_args()
 
     if args.env == "simple":
-        run_simple()
+        run_simple(temperature=args.temperature)
     else:
-        run_complex(use_memory=args.memory, use_linear=args.linear)
+        run_complex(
+            temperature=args.temperature,
+            use_memory=args.memory,
+            use_linear=args.linear,
+        )
 
 
 if __name__ == "__main__":

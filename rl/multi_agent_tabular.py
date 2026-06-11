@@ -64,20 +64,35 @@ class MultiAgentTabularQ:
             self.q_table[obs] = np.zeros(self.per_robot_action_size, dtype=np.float64)
         return self.q_table[obs]
 
-    def _pick_one(self, obs: Hashable, greedy: bool) -> int:
-        if not greedy and self._rng.random() < self.epsilon:
-            return self._rng.randrange(self.per_robot_action_size)
+    def _pick_one(
+        self,
+        obs: Hashable,
+        greedy: bool,
+        temperature: Optional[float],
+    ) -> int:
         q = self.get_q_values(obs)
-        max_q = q.max()
-        best = np.flatnonzero(q == max_q)
-        return int(self._np_rng.choice(best))
+        if greedy:
+            return int(self._np_rng.choice(np.flatnonzero(q == q.max())))
+        if temperature is not None:
+            # Boltzmann/softmax sampling: P(a) ∝ exp(Q(a) / T). Subtract the
+            # max for numerical stability. Low T → greedy, high T → uniform.
+            p = np.exp((q - q.max()) / temperature)
+            p /= p.sum()
+            return int(self._np_rng.choice(len(q), p=p))
+        if self._rng.random() < self.epsilon:
+            return self._rng.randrange(self.per_robot_action_size)
+        return int(self._np_rng.choice(np.flatnonzero(q == q.max())))
 
     def choose_action(
         self,
         observations: Sequence[Observation],
         greedy: bool = False,
+        temperature: Optional[float] = None,
     ) -> Tuple[int, ...]:
-        return tuple(self._pick_one(obs, greedy) for obs in observations)
+        """Pick one action per robot. ``greedy`` takes precedence; otherwise a
+        ``temperature`` selects Boltzmann/softmax sampling, and if neither is
+        set the agent falls back to epsilon-greedy."""
+        return tuple(self._pick_one(obs, greedy, temperature) for obs in observations)
 
     def update(
         self,

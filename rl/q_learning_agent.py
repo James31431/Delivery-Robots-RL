@@ -46,16 +46,27 @@ class QLearningAgent:
             self.q_table[state] = np.zeros(self.action_space_size, dtype=np.float64)
         return self.q_table[state]
 
-    def choose_action(self, state: Hashable, greedy: bool = False) -> int:
-        """Epsilon-greedy action selection. Set greedy=True to disable exploration."""
-        if not greedy and self._rng.random() < self.epsilon:
-            return self._rng.randrange(self.action_space_size)
-
+    def choose_action(
+        self,
+        state: Hashable,
+        greedy: bool = False,
+        temperature: Optional[float] = None,
+    ) -> int:
+        """Action selection. ``greedy=True`` disables exploration (argmax);
+        otherwise a ``temperature`` selects Boltzmann/softmax sampling, and if
+        neither is set the agent falls back to epsilon-greedy."""
         q_values = self.get_q_values(state)
+        if greedy:
+            return int(self._np_rng.choice(np.flatnonzero(q_values == q_values.max())))
+        if temperature is not None:
+            # Boltzmann/softmax: P(a) ∝ exp(Q(a) / T); subtract max for stability.
+            p = np.exp((q_values - q_values.max()) / temperature)
+            p /= p.sum()
+            return int(self._np_rng.choice(len(q_values), p=p))
+        if self._rng.random() < self.epsilon:
+            return self._rng.randrange(self.action_space_size)
         # Break ties randomly among the best actions
-        max_q = q_values.max()
-        best_actions = np.flatnonzero(q_values == max_q)
-        return int(self._np_rng.choice(best_actions))
+        return int(self._np_rng.choice(np.flatnonzero(q_values == q_values.max())))
 
     def update(
         self,
