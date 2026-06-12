@@ -6,7 +6,7 @@ works fine with them too — it's smaller and easily converges within this
 episode budget.
 """
 
-NUM_TRAINING_EPISODES = 30_000
+NUM_TRAINING_EPISODES = 50_000
 NUM_EVALUATION_EPISODES = 100
 MAX_STEPS = 50  # used by the SimpleBuildingEnv pipeline; complex pipeline
                 # overrides via ComplexEnvConfig(max_steps=...)
@@ -17,8 +17,19 @@ EVAL_SEED = 123
 LEARNING_RATE = 0.3
 DISCOUNT_FACTOR = 0.90
 EPSILON = 1.0
-EPSILON_DECAY = 0.9995  # reaches min_epsilon around episode 6000
-MIN_EPSILON = 0.05
+EPSILON_DECAY = 0.9999
+MIN_EPSILON = 0.2
 
-Q_TABLE_PATH = "q_table.pkl"
-TRAINING_STATS_PATH = "training_stats.csv"
+# Artifacts are namespaced per environment so the simple and complex
+# pipelines don't overwrite each other (e.g. q_table_simple.pkl vs
+# q_table_complex.pkl).
+def q_table_path(env_name: str) -> str:
+    return f"q_table_{env_name}.pkl"
+
+
+def training_stats_path(env_name: str) -> str:
+    return f"training_stats_{env_name}.csv"
+
+
+def training_curves_path(env_name: str) -> str:
+    return f"training_curves_{env_name}.png"
