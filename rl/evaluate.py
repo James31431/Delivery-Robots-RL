@@ -10,54 +10,20 @@ from typing import Any, Dict, List, Optional
 from rl.interfaces import AgentProtocol, EnvironmentProtocol
 
 
-def _json_safe(value: Any) -> Any:
-    """Convert common Python objects into JSON-serializable structures."""
-    if is_dataclass(value):
-        return _json_safe(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
-    if hasattr(value, "item") and callable(getattr(value, "item")):
-        try:
-            return value.item()
-        except Exception:
-            pass
-    return value
-
-
-def _env_metadata(env: EnvironmentProtocol) -> Dict[str, Any]:
-    metadata: Dict[str, Any] = {
-        "env_class": env.__class__.__name__,
-        "action_space_size": getattr(env, "action_space_size", None),
-    }
-    cfg = getattr(env, "cfg", None)
-    if cfg is not None:
-        metadata["config"] = _json_safe(cfg)
-    return metadata
-
-
-def _save_episode_record(path: Path, record: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(_json_safe(record), handle, indent=2, sort_keys=True)
-        handle.write("\n")
-
-
 def evaluate_agent(
     env: EnvironmentProtocol,
     agent: AgentProtocol,
     episodes: int = 100,
     max_steps: int = 50,
     render: bool = False,
-    record_episode_path: Optional[str] = None,
 ) -> Dict[str, float]:
-    """Run ``agent`` on ``env`` with exploration disabled and report metrics.
+    """Run ``agent`` on ``env`` and report metrics.
 
-    If the agent has an ``epsilon`` attribute, it is temporarily set to 0 and
-    restored afterwards. Baseline policies without epsilon work fine too.
+    By default actions are greedy (exploration disabled): if the agent has an
+    ``epsilon`` attribute it is temporarily set to 0 and restored afterwards.
+    If ``temperature`` is given, the agent is queried with Boltzmann/softmax
+    sampling instead (agents that don't support it fall back to greedy).
+    Baseline policies without epsilon work fine too.
     """
     total_rewards = 0.0
     successes = 0
@@ -100,7 +66,7 @@ def evaluate_agent(
                     action = agent.choose_action(state, greedy=True)  # type: ignore[call-arg]
                 except TypeError:
                     action = agent.choose_action(state)
-                next_state, reward, done, info = env.step(action)
+                state, reward, done, info = env.step(action)
                 ep_reward += reward
                 ep_steps += 1
                 if isinstance(info, dict) and info.get("success"):
