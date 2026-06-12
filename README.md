@@ -8,9 +8,9 @@ buildings with elevators. Ships with two environments:
 - **`ComplexBuildingEnv`** — 8 floors, 2 robots, 2 elevators, refilling task
   queue, stochastic elevator delays and breakdowns. Solved with **per-robot
   partial observation** + a **shared multi-agent Q-table**. Two optional
-  extensions ship alongside it: a **1-step action memory** (`--memory`) that
-  partly de-aliases the POMDP, and a **linear function approximator**
-  (`--linear`) as the step beyond a bigger table.
+  add-ons: a **1-step action memory** (`--memory`) that helps the greedy policy,
+  and a **linear function approximator** (`--linear`) that generalizes across
+  observations instead of using a table.
 
 The pipeline compares learned policies against **Random** (floor) and
 **Optimal** (ceiling, simple env only) baselines, plots training curves, and
@@ -471,23 +471,20 @@ reproduce.
 
 ### 1-step action memory (`--memory`) — confirming the aliasing cause
 
-If the greedy collapse above is really caused by perceptual aliasing (one
-observation standing in for several true states), then giving the policy a
-_little_ memory should let a deterministic policy tell those states apart and
-recover. `ComplexEnvConfig(include_last_action=True)` does exactly that — it
-appends each robot's **own previous action** to its per-robot observation (one
-extra field, see [`complex_env.py`](environment/complex_env.py)), turning the
-memoryless reactive policy into a minimal 1-step-memory policy. Train it with:
+If the greedy collapse above is caused by aliasing (one observation standing in
+for several true states), then giving the policy a little memory should let it
+tell those states apart. `ComplexEnvConfig(include_last_action=True)` does this:
+it adds each robot's **own previous action** to its observation as one extra
+field (see [`complex_env.py`](environment/complex_env.py)). Train it with:
 
 ```bash
 python main.py --env complex --memory          # writes the complex_mem artifacts
 python evaluate_saved.py --env complex --compare   # no-memory vs memory, side by side
 ```
 
-The prediction is directional and sharp: de-aliasing should make **greedy good
-again** and make injected stochasticity **harmful**, because an (approximately)
-Markov state admits an optimal deterministic policy. That is what happens — the
-entire greedy-vs-stochastic ranking flips (held-out seed 123, 100 episodes):
+The prediction is simple: if memory fixes the aliasing, then **greedy should get
+good again** and adding randomness should now **hurt** instead of help. That is
+what happens — the whole ranking flips (held-out seed 123, 100 episodes):
 
 | Mode               | No memory (Success% / Reward) | 1-step memory (Success% / Reward) |
 | ------------------ | ----------------------------- | --------------------------------- |
@@ -497,24 +494,23 @@ entire greedy-vs-stochastic ranking flips (held-out seed 123, 100 episodes):
 | Random baseline    | 0% / -2073.8                  | 0% / -2073.8                      |
 
 One field of memory lifts greedy from 9% to 66% and turns the worst average
-reward into the best, while the _same_ stochasticity that rescued the memoryless
-agent now degrades it. This is the signature of restoring Markovianity: noise
-can only hurt a policy whose state is sufficient. The gap doesn't fully close
-(66%, not 100%) because a single past action is a minimal belief approximation
-and the extra field enlarges the per-robot space, so the table is less converged
-under the same budget — but the qualitative reversal confirms the cause.
+reward into the best, while the _same_ randomness that helped the memoryless
+agent now hurts. That flip is the point: once the observation carries enough
+information, a deterministic policy works and noise only gets in the way. The
+gap doesn't fully close (66%, not 100%) — one past action is only a little
+memory, and the extra field makes the table bigger and slower to fill in under
+the same training budget — but the reversal confirms the cause.
 
 ### Linear function approximation (`--linear`)
 
-The honest next step past "a bigger table" is to stop enumerating observations
-and start **generalizing** across them. [`rl/linear_agent.py`](rl/linear_agent.py)
-provides `LinearMultiAgentQ`: instead of a dict keyed by exact observation
-tuples, it learns a weight matrix `W` of shape `(n_features, per_robot_action_size)`
-and estimates `Q(obs, a) = phi(obs) . W[:, a]`, where `phi` one-hot encodes the
-per-robot observation (`make_per_robot_featurizer` builds it from the config,
-and automatically extends the encoding when `include_last_action` is on). Every
-robot's transition makes a semi-gradient TD update to the shared `W`, so
-experience is pooled exactly as in the tabular shared-table design.
+The next step past "a bigger table" is to **generalize** across observations
+instead of storing each one. [`rl/linear_agent.py`](rl/linear_agent.py) provides
+`LinearMultiAgentQ`: instead of a dict keyed by exact observation tuples, it
+learns a weight matrix `W` and estimates `Q(obs, a) = phi(obs) . W[:, a]`, where
+`phi` one-hot encodes the per-robot observation (`make_per_robot_featurizer`
+builds it from the config, and extends it automatically when
+`include_last_action` is on). Each robot's transition updates the shared `W`, so
+experience is pooled just like the shared Q-table.
 
 ```bash
 python main.py --env complex --linear            # writes the complex_linear artifacts
@@ -522,11 +518,10 @@ python main.py --env complex --linear --memory   # FA + 1-step memory
 python evaluate_saved.py --env complex --linear --compare
 ```
 
-It is a drop-in `AgentProtocol` implementation, so `train_agent` /
-`evaluate_agent` consume it unchanged. Note it trains at a **smaller learning
-rate** (`0.05`, not the tabular `0.3`) — function approximation needs gentler
-steps to stay stable, since each update perturbs a shared weight vector rather
-than a single isolated table cell.
+It is a drop-in `AgentProtocol`, so `train_agent` / `evaluate_agent` use it
+unchanged. It trains at a **smaller learning rate** (`0.05`, not the tabular
+`0.3`): each update changes a shared weight vector instead of one isolated table
+cell, so it needs gentler steps to stay stable.
 
 ### POMDP caveat
 
