@@ -7,7 +7,10 @@ buildings with elevators. Ships with two environments:
   deterministic. Tabular Q-learning provably solves it.
 - **`ComplexBuildingEnv`** — 8 floors, 2 robots, 2 elevators, refilling task
   queue, stochastic elevator delays and breakdowns. Solved with **per-robot
-  partial observation** + a **shared multi-agent Q-table**.
+  partial observation** + a **shared multi-agent Q-table**. Two optional
+  extensions ship alongside it: a **1-step action memory** (`--memory`) that
+  partly de-aliases the POMDP, and a **linear function approximator**
+  (`--linear`) as the step beyond a bigger table.
 
 The pipeline compares learned policies against **Random** (floor) and
 **Optimal** (ceiling, simple env only) baselines, plots training curves, and
@@ -25,10 +28,10 @@ floor, exit, and deliver a package — using only reward signals.
 
 The trained agent is compared against:
 
-| Baseline       | Role                        |
-|----------------|-----------------------------|
-| `RandomAgent`  | Performance **floor**       |
-| `OptimalAgent` | Performance **ceiling**     |
+| Baseline       | Role                    |
+| -------------- | ----------------------- |
+| `RandomAgent`  | Performance **floor**   |
+| `OptimalAgent` | Performance **ceiling** |
 
 This sandwich tells you whether learning actually happened and how close it
 got to optimal.
@@ -52,6 +55,7 @@ Delivery-Robots-RL/
 │   ├── interfaces.py          # Lightweight Protocols (Env, Agent)
 │   ├── q_learning_agent.py    # Tabular Q-learning (single agent)
 │   ├── multi_agent_tabular.py # Multi-agent tabular Q (shared Q-table)
+│   ├── linear_agent.py        # Linear function-approximation Q (shared weights)
 │   ├── baselines.py           # RandomAgent, OptimalAgent
 │   ├── train.py               # train_agent(env, agent, ...)
 │   └── evaluate.py            # evaluate_agent(env, agent, ...)
@@ -77,23 +81,23 @@ Delivery-Robots-RL/
 
 **Actions**
 
-| ID | Name              |
-|----|-------------------|
-| 0  | `wait`            |
-| 1  | `enter_elevator`  |
-| 2  | `exit_elevator`   |
-| 3  | `elevator_up`     |
-| 4  | `elevator_down`   |
-| 5  | `deliver_package` |
+| ID  | Name              |
+| --- | ----------------- |
+| 0   | `wait`            |
+| 1   | `enter_elevator`  |
+| 2   | `exit_elevator`   |
+| 3   | `elevator_up`     |
+| 4   | `elevator_down`   |
+| 5   | `deliver_package` |
 
 **Reward design**
 
 | Event               | Reward |
-|---------------------|--------|
+| ------------------- | ------ |
 | Successful delivery | +100   |
-| Each normal step    |  -1    |
-| Invalid action      |  -5    |
-| `wait`              |  -2    |
+| Each normal step    | -1     |
+| Invalid action      | -5     |
+| `wait`              | -2     |
 
 ---
 
@@ -113,14 +117,20 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
 # 4. Train + evaluate + compare against baselines + save plot
-python main.py --env simple      # default
-python main.py --env complex     # the harder, stochastic, multi-robot env
+python main.py --env simple                # default
+python main.py --env complex               # the harder, stochastic, multi-robot env
+python main.py --env complex --memory      # + 1-step action memory (include_last_action)
+python main.py --env complex --linear      # linear function approximator instead of a table
+python main.py --env complex --linear --memory   # FA + memory
 
 # 5. Evaluate an ALREADY-trained table (no retraining) and compare
 #    greedy / epsilon-greedy / softmax action selection vs Random
 python evaluate_saved.py --env simple
 python evaluate_saved.py --env complex
 python evaluate_saved.py --env complex --seed 42 --episodes 200 --temp 2.0
+python evaluate_saved.py --env complex --memory          # evaluate the *_mem table
+python evaluate_saved.py --env complex --compare         # no-memory vs 1-step memory, side by side
+python evaluate_saved.py --env complex --linear --compare  # same, for the linear-FA variants
 
 # 6. Run tests
 pytest
@@ -134,16 +144,26 @@ python run_experiments.py
 Artifacts are **namespaced per environment** so the simple and complex
 pipelines never overwrite each other (`{env}` is `simple` or `complex`):
 
-| File                        | Produced by              | What it is                               |
-|-----------------------------|--------------------------|------------------------------------------|
-| `q_table_{env}.pkl`         | `main.py`                | Pickled Q-table                          |
-| `training_stats_{env}.csv`  | `main.py`                | Per-episode reward / steps / success / ε |
-| `training_curves_{env}.png` | `main.py`                | 2×2 figure of training curves            |
-| `results/<run>/`            | `run_experiments.py`     | One CSV per (seed, agent) + plots        |
+| File                        | Produced by          | What it is                               |
+| --------------------------- | -------------------- | ---------------------------------------- |
+| `q_table_{env}.pkl`         | `main.py`            | Pickled Q-table                          |
+| `training_stats_{env}.csv`  | `main.py`            | Per-episode reward / steps / success / ε |
+| `training_curves_{env}.png` | `main.py`            | 2×2 figure of training curves            |
+| `results/<run>/`            | `run_experiments.py` | One CSV per (seed, agent) + plots        |
 
 The path helpers `config.q_table_path(env)`, `config.training_stats_path(env)`,
 and `config.training_curves_path(env)` produce these names. All generated
 artifacts are gitignored.
+
+For the complex env, each `main.py` variant writes to its **own** `{variant}`
+namespace so they never clobber each other and can be compared side by side:
+
+| Variant flags       | `{variant}`          | Agent                             |
+| ------------------- | -------------------- | --------------------------------- |
+| _(none)_            | `complex`            | memoryless tabular shared Q-table |
+| `--memory`          | `complex_mem`        | tabular + 1-step action memory    |
+| `--linear`          | `complex_linear`     | linear function approximator      |
+| `--linear --memory` | `complex_linear_mem` | linear FA + 1-step action memory  |
 
 ### Plotting standalone
 
@@ -195,17 +215,17 @@ action spaces explode, and to motivate the architectural choices (partial
 observability, multi-agent decomposition) needed to keep tabular methods
 viable.
 
-| Aspect              | `SimpleBuildingEnv`                  | `ComplexBuildingEnv`                                     |
-|---------------------|--------------------------------------|-----------------------------------------------------------|
-| Floors              | 5                                    | 8 (configurable)                                          |
-| Robots              | 1                                    | 2 (configurable, 1–4)                                     |
-| Elevators           | 1                                    | 2 (configurable)                                          |
-| Tasks               | 1 per episode                        | Refilling queue: 3 active slots, 6 per episode (defaults) |
-| Dynamics            | Deterministic                        | Stochastic: elevator delay, breakdowns, task spawn        |
-| State space (full)  | ~400                                 | Combinatorially huge (>10⁶ reachable)                     |
-| Flat action space   | 6                                    | `per_robot_actions ** n_robots` (576 with defaults)       |
-| Observation mode    | Always full state                    | `full` or `per_robot` (POMDP); the latter is the one that actually works for tabular |
-| Suited for          | Tabular Q-learning (provably solves) | Multi-agent tabular under PO; full DQN later              |
+| Aspect             | `SimpleBuildingEnv`                  | `ComplexBuildingEnv`                                                                 |
+| ------------------ | ------------------------------------ | ------------------------------------------------------------------------------------ |
+| Floors             | 5                                    | 8 (configurable)                                                                     |
+| Robots             | 1                                    | 2 (configurable, 1–4)                                                                |
+| Elevators          | 1                                    | 2 (configurable)                                                                     |
+| Tasks              | 1 per episode                        | Refilling queue: 3 active slots, 6 per episode (defaults)                            |
+| Dynamics           | Deterministic                        | Stochastic: elevator delay, breakdowns, task spawn                                   |
+| State space (full) | ~400                                 | Combinatorially huge (>10⁶ reachable)                                                |
+| Flat action space  | 6                                    | `per_robot_actions ** n_robots` (576 with defaults)                                  |
+| Observation mode   | Always full state                    | `full` or `per_robot` (POMDP); the latter is the one that actually works for tabular |
+| Suited for         | Tabular Q-learning (provably solves) | Multi-agent tabular under PO; full DQN later                                         |
 
 ### The world
 
@@ -220,11 +240,11 @@ the task's delivery floor (also outside) and selecting `deliver`.
 
 Three independent sources of randomness make this env interesting:
 
-| Source                       | Default            | Effect                                                                                            |
-|------------------------------|--------------------|---------------------------------------------------------------------------------------------------|
-| **Elevator delay**           | `p_elevator_delay = 0.10` | An elevator's planned movement turns into a no-op for that step (think slow door close).         |
-| **Breakdown**                | `p_breakdown = 0.01`      | An elevator becomes unusable for `breakdown_duration = 5` steps. Any robot inside is ejected at the current floor; if it was carrying a task it eats a `-20` penalty.   |
-| **Task spawn**               | `p_new_task = 0.20`       | When a task slot is empty (delivered → INACTIVE), refill it with a new random `(pickup_floor, delivery_floor)`. Capped at `total_task_budget` spawns per episode.        |
+| Source             | Default                   | Effect                                                                                                                                                                |
+| ------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Elevator delay** | `p_elevator_delay = 0.10` | An elevator's planned movement turns into a no-op for that step (think slow door close).                                                                              |
+| **Breakdown**      | `p_breakdown = 0.01`      | An elevator becomes unusable for `breakdown_duration = 5` steps. Any robot inside is ejected at the current floor; if it was carrying a task it eats a `-20` penalty. |
+| **Task spawn**     | `p_new_task = 0.20`       | When a task slot is empty (delivered → INACTIVE), refill it with a new random `(pickup_floor, delivery_floor)`. Capped at `total_task_budget` spawns per episode.     |
 
 All three probabilities are independent per step, per elevator (or per slot
 for spawn). They're all dial-able through `ComplexEnvConfig`.
@@ -256,7 +276,7 @@ function-approximation agents — it additionally includes `self.steps`
 because neural nets can use a time signal productively whereas tabular
 tables would only inflate from it.
 
-> **Why the step counter is *not* in the hashable state.** Including a
+> **Why the step counter is _not_ in the hashable state.** Including a
 > monotonic counter made every state unique. After 5000 episodes the
 > Q-table held 5 million entries and ate 18 GB. Dropping it lets revisits
 > happen, which is the whole point of tabular methods.
@@ -301,14 +321,14 @@ without modification.
 
 Each robot has its own per-robot action set (`24` actions for defaults):
 
-| Per-robot action            | Effect                                                                       |
-|-----------------------------|------------------------------------------------------------------------------|
-| `wait`                      | Robot does nothing this step (`-2` reward).                                  |
-| `enter_elevator_<id>`       | Enter elevator `<id>` (valid only if same floor, robot outside, not broken).  |
-| `exit_elevator`             | Step out at the elevator's current floor.                                    |
+| Per-robot action                    | Effect                                                                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `wait`                              | Robot does nothing this step (`-2` reward).                                                                                               |
+| `enter_elevator_<id>`               | Enter elevator `<id>` (valid only if same floor, robot outside, not broken).                                                              |
+| `exit_elevator`                     | Step out at the elevator's current floor.                                                                                                 |
 | `request_elevator_<e>_to_floor_<f>` | Set elevator `e`'s target to floor `f`. Elevator then advances one step toward target on subsequent ticks (subject to delay / breakdown). |
-| `pickup_task_<slot>`        | Pick up the task in slot `<slot>` (valid if pending, robot outside, on its pickup floor, not already carrying). |
-| `deliver`                   | Deliver the currently-carried task (valid if outside elevator and on its delivery floor). |
+| `pickup_task_<slot>`                | Pick up the task in slot `<slot>` (valid if pending, robot outside, on its pickup floor, not already carrying).                           |
+| `deliver`                           | Deliver the currently-carried task (valid if outside elevator and on its delivery floor).                                                 |
 
 Per-robot action size:
 `1 + n_elevators + 1 + n_elevators*n_floors + n_tasks + 1`. With defaults:
@@ -325,14 +345,14 @@ The **flat** (team-joint) action space is `per_robot_actions ** n_robots`
 
 ### Reward design
 
-| Event                                            | Reward          |
-|--------------------------------------------------|-----------------|
-| Successful delivery                              | `+100` per task |
-| Pickup (intermediate, combats reward sparsity)   | `+10`           |
-| Per robot, per step                              | `-0.5`          |
-| `wait` per robot                                 | `-2`            |
-| Any invalid sub-action                           | `-5`            |
-| Breakdown ejecting a carrying robot              | `-20`           |
+| Event                                          | Reward          |
+| ---------------------------------------------- | --------------- |
+| Successful delivery                            | `+100` per task |
+| Pickup (intermediate, combats reward sparsity) | `+10`           |
+| Per robot, per step                            | `-0.5`          |
+| `wait` per robot                               | `-2`            |
+| Any invalid sub-action                         | `-5`            |
+| Breakdown ejecting a carrying robot            | `-20`           |
 
 The `+10` pickup bonus is reward shaping — it gives the agent a denser
 gradient than a delivery-only signal would. Cooperative team reward: all
@@ -412,10 +432,10 @@ and produces a comparison table plus `training_curves.png`.
 After 20,000 training episodes (defaults: 8 floors, 2 robots, 2 elevators,
 stochastic delays + breakdowns, 6-task budget per episode, 300 max steps):
 
-| Agent          | Avg reward | Mean deliveries / episode | Q-table size |
-|----------------|------------|---------------------------|--------------|
+| Agent          | Avg reward | Mean deliveries / episode | Q-table size     |
+| -------------- | ---------- | ------------------------- | ---------------- |
 | `MultiAgent-Q` | **-340**   | **0.27**                  | ~50k obs (~9 MB) |
-| `Random`       | -1260      | 0.11                      | n/a          |
+| `Random`       | -1260      | 0.11                      | n/a              |
 
 The trained policy is ~2.4× better than random in deliveries per episode
 and ~73% better in reward. Full-budget completion (6/6 tasks delivered
@@ -429,12 +449,12 @@ Evaluating the trained table (`evaluate_saved.py --env complex`, 50k-episode
 run, 500 max steps, held-out seed 123) reveals that **how you query the
 policy dominates the result**:
 
-| Mode                  | Success % | Avg reward |
-|-----------------------|-----------|------------|
-| greedy (argmax-Q)     | 11%       | -1174      |
-| ε-greedy (ε=0.37)     | 80%       | -283       |
-| **softmax (temp≈2)**  | **93%**   | **-73**    |
-| Random baseline       | 0%        | -2074      |
+| Mode                 | Success % | Avg reward |
+| -------------------- | --------- | ---------- |
+| greedy (argmax-Q)    | 11%       | -1174      |
+| ε-greedy (ε=0.37)    | 80%       | -283       |
+| **softmax (temp≈2)** | **93%**   | **-73**    |
+| Random baseline      | 0%        | -2074      |
 
 Greedy collapses while softmax sampling reaches 93%. This is **not** an
 overfitting/generalization gap: holding the mode fixed, the train seed (42)
@@ -443,18 +463,77 @@ and held-out seed (123) score almost identically (greedy 14% vs 11%;
 cause is the **POMDP**: under partial observation a memoryless policy suffers
 perceptual aliasing, where one observation maps to several true states, so a
 deterministic greedy policy gets trapped in stall/oscillation loops. A
-*stochastic* policy (ε-greedy, and especially Q-weighted softmax) hedges
+_stochastic_ policy (ε-greedy, and especially Q-weighted softmax) hedges
 across the aliased states and escapes them. By contrast, on the fully-observed
 `SimpleBuildingEnv`, greedy is already optimal and stochasticity only hurts —
 exactly the MDP-vs-POMDP distinction. Run `evaluate_saved.py` on both envs to
 reproduce.
+
+### 1-step action memory (`--memory`) — confirming the aliasing cause
+
+If the greedy collapse above is really caused by perceptual aliasing (one
+observation standing in for several true states), then giving the policy a
+_little_ memory should let a deterministic policy tell those states apart and
+recover. `ComplexEnvConfig(include_last_action=True)` does exactly that — it
+appends each robot's **own previous action** to its per-robot observation (one
+extra field, see [`complex_env.py`](environment/complex_env.py)), turning the
+memoryless reactive policy into a minimal 1-step-memory policy. Train it with:
+
+```bash
+python main.py --env complex --memory          # writes the complex_mem artifacts
+python evaluate_saved.py --env complex --compare   # no-memory vs memory, side by side
+```
+
+The prediction is directional and sharp: de-aliasing should make **greedy good
+again** and make injected stochasticity **harmful**, because an (approximately)
+Markov state admits an optimal deterministic policy. That is what happens — the
+entire greedy-vs-stochastic ranking flips (held-out seed 123, 100 episodes):
+
+| Mode               | No memory (Success% / Reward) | 1-step memory (Success% / Reward) |
+| ------------------ | ----------------------------- | --------------------------------- |
+| greedy (argmax-Q)  | 9% / -763.7                   | **66% / -95.5**                   |
+| ε-greedy (ε=0.37)  | **82% / -252.4**              | 29% / -738.1                      |
+| softmax (temp=2.0) | 70% / -397.9                  | 19% / -836.2                      |
+| Random baseline    | 0% / -2073.8                  | 0% / -2073.8                      |
+
+One field of memory lifts greedy from 9% to 66% and turns the worst average
+reward into the best, while the _same_ stochasticity that rescued the memoryless
+agent now degrades it. This is the signature of restoring Markovianity: noise
+can only hurt a policy whose state is sufficient. The gap doesn't fully close
+(66%, not 100%) because a single past action is a minimal belief approximation
+and the extra field enlarges the per-robot space, so the table is less converged
+under the same budget — but the qualitative reversal confirms the cause.
+
+### Linear function approximation (`--linear`)
+
+The honest next step past "a bigger table" is to stop enumerating observations
+and start **generalizing** across them. [`rl/linear_agent.py`](rl/linear_agent.py)
+provides `LinearMultiAgentQ`: instead of a dict keyed by exact observation
+tuples, it learns a weight matrix `W` of shape `(n_features, per_robot_action_size)`
+and estimates `Q(obs, a) = phi(obs) . W[:, a]`, where `phi` one-hot encodes the
+per-robot observation (`make_per_robot_featurizer` builds it from the config,
+and automatically extends the encoding when `include_last_action` is on). Every
+robot's transition makes a semi-gradient TD update to the shared `W`, so
+experience is pooled exactly as in the tabular shared-table design.
+
+```bash
+python main.py --env complex --linear            # writes the complex_linear artifacts
+python main.py --env complex --linear --memory   # FA + 1-step memory
+python evaluate_saved.py --env complex --linear --compare
+```
+
+It is a drop-in `AgentProtocol` implementation, so `train_agent` /
+`evaluate_agent` consume it unchanged. Note it trains at a **smaller learning
+rate** (`0.05`, not the tabular `0.3`) — function approximation needs gentler
+steps to stay stable, since each update perturbs a shared weight vector rather
+than a single isolated table cell.
 
 ### POMDP caveat
 
 Per-robot observation hides things the full state knows: the other
 robots' positions and intentions, the other elevators' detailed status
 beyond floor/broken, the full task queue. A robot acting only on its own
-observation can't *guarantee* optimal team behavior — two robots might
+observation can't _guarantee_ optimal team behavior — two robots might
 both head for the same elevator, etc. In practice this works fine for
 this env because:
 
@@ -465,7 +544,8 @@ this env because:
   a coherent local objective.
 
 If you need provably-optimal multi-agent coordination, the right fix is
-function approximation with a centralized critic — out of scope here.
+function approximation (the `--linear` agent is a first step in that direction)
+with a centralized critic — the latter is out of scope here.
 
 ### Try the demo
 
@@ -476,7 +556,7 @@ python demo_complex_env.py
 A quick standalone script that trains a vanilla single-agent
 `QLearningAgent` against `Random` on the complex env in **full-state**
 mode. Expected outcome: both ~0% success — the demo's whole purpose is to
-show *why* `obs_mode='per_robot'` + `MultiAgentTabularQ` exist.
+show _why_ `obs_mode='per_robot'` + `MultiAgentTabularQ` exist.
 
 ---
 
