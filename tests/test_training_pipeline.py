@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import sys
@@ -68,6 +69,41 @@ def test_evaluate_agent_with_baseline_random_policy():
         "episodes",
     }
     assert results["episodes"] == 5
+
+
+def test_evaluate_agent_can_record_single_episode(tmp_path):
+    class GreedyPolicy:
+        def __init__(self, action_space_size):
+            self.action_space_size = action_space_size
+
+        def choose_action(self, state, greedy=False):
+            return 0
+
+        def update(self, state, action, reward, next_state, done):
+            pass
+
+    env = SimpleBuildingEnv(max_steps=5, seed=0)
+    policy = GreedyPolicy(env.action_space_size)
+    out = tmp_path / "episode.json"
+
+    results = evaluate_agent(
+        env,
+        policy,
+        episodes=1,
+        max_steps=5,
+        record_episode_path=str(out),
+    )
+
+    assert results["episodes"] == 1
+    assert out.exists()
+
+    payload = json.loads(out.read_text())
+    assert payload["episode"] == 1
+    assert payload["metadata"]["env_class"] == "SimpleBuildingEnv"
+    assert payload["trajectory"][0]["info"]["phase"] == "reset"
+    assert payload["trajectory"][0]["step"] == 0
+    assert payload["trajectory"][-1]["step"] >= 1
+    assert "reward" in payload
 
 
 def test_save_training_stats_writes_csv(tmp_path):

@@ -17,7 +17,7 @@ EVAL_SEED = 123
 LEARNING_RATE = 0.3
 DISCOUNT_FACTOR = 0.90
 EPSILON = 1.0
-EPSILON_DECAY = 0.99998
+EPSILON_DECAY = 0.9999
 MIN_EPSILON = 0.2
 
 # Artifacts are namespaced per environment so the simple and complex

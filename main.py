@@ -32,6 +32,7 @@ from rl.q_learning_agent import QLearningAgent
 from rl.train import train_agent
 from rl.evaluate import evaluate_agent
 from utils.logger import save_training_stats
+from utils.visualizer import EpisodeReplayRenderer
 from utils.plot import plot_training_curves
 
 
@@ -68,16 +69,27 @@ def _evaluate_all(
     fresh_env_fn: Callable[[], Any],
     max_steps: int,
     temperature: Optional[float] = None,
+    record_episode_path: Optional[str] = None,
+    record_agent_name: Optional[str] = None,
+    record_env_fn: Optional[Callable[[], Any]] = None,
+    record_agent_factory: Optional[Callable[[Any], Any]] = None,
 ) -> Dict[str, Dict[str, float]]:
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in agents.items():
         print(f"\nEvaluating {name}...")
+        episode_path = record_episode_path if name == record_agent_name else None
+        eval_env = fresh_env_fn()
+        if episode_path is not None and record_env_fn is not None and record_agent_factory is not None:
+            eval_env = record_env_fn()
+            agent = record_agent_factory(agent)
         results[name] = evaluate_agent(
-            fresh_env_fn(),
+            eval_env,
             agent,
             episodes=config.NUM_EVALUATION_EPISODES,
             max_steps=max_steps,
             temperature=temperature,
+            record_episode_path=episode_path,
+            record_successful_episode_only=episode_path is not None,
         )
     return results
 
@@ -104,6 +116,76 @@ def _plot(stats_path: str, optimal_reward: Optional[float], env_name: str) -> No
         optimal_reward=optimal_reward,
     )
     print(f"Saved training curves to {plot_path}")
+
+
+class _FullStateReplayAgent:
+    """Adapter that lets the multi-agent policy run on a full complex state.
+
+    The trained policy still operates on per-robot observations. For replay,
+    we want a full-state recording so the renderer can reconstruct the entire
+    scene. This adapter converts the recorded full state into the per-robot
+    observation tuples the policy expects.
+    """
+
+    def __init__(self, agent: MultiAgentTabularQ, env_cfg: ComplexEnvConfig) -> None:
+        self._agent = agent
+        self._n_robots = env_cfg.n_robots
+        self._n_elevators = env_cfg.n_elevators
+        self._n_tasks = env_cfg.n_tasks
+
+    def _to_per_robot_observations(self, state: Any) -> tuple[tuple[int, ...], ...]:
+        flat_state: list[int] = []
+        for item in state:
+            if isinstance(item, (list, tuple)):
+                flat_state.extend(int(value) for value in item)
+            else:
+                flat_state.append(int(item))
+
+        observations: list[tuple[int, ...]] = []
+        index = 0
+        robot_chunks: list[tuple[int, int, int]] = []
+        elevator_chunks: list[tuple[int, int, int]] = []
+        task_chunks: list[tuple[int, int, int]] = []
+
+        for _ in range(self._n_robots):
+            robot_chunks.append(tuple(flat_state[index:index + 3]))
+            index += 3
+        for _ in range(self._n_elevators):
+            elevator_chunks.append(tuple(flat_state[index:index + 3]))
+            index += 3
+        for _ in range(self._n_tasks):
+            task_chunks.append(tuple(flat_state[index:index + 3]))
+            index += 3
+
+        for robot_idx in range(self._n_robots):
+            robot_floor, inside_elevator, carrying_task = robot_chunks[robot_idx]
+            obs: list[int] = [robot_floor, inside_elevator, carrying_task]
+            for elevator_floor, direction, broken_remaining in elevator_chunks:
+                obs.append(elevator_floor)
+                obs.append(1 if broken_remaining > 0 else 0)
+
+            if carrying_task >= 0:
+                obs.append(-1)
+                obs.append(task_chunks[carrying_task][1])
+            else:
+                best_pickup = -1
+                best_dist: Optional[int] = None
+                for pickup_floor, delivery_floor, status in task_chunks:
+                    if status != 1:
+                        continue
+                    distance = abs(pickup_floor - robot_floor)
+                    if best_dist is None or distance < best_dist:
+                        best_pickup = pickup_floor
+                        best_dist = distance
+                obs.append(best_pickup)
+                obs.append(-1)
+
+            observations.append(tuple(obs))
+
+        return tuple(observations)
+
+    def choose_action(self, state: Any, greedy: bool = False) -> Any:
+        return self._agent.choose_action(self._to_per_robot_observations(state), greedy=greedy)
 
 
 # --- Pipelines -------------------------------------------------------------
@@ -219,9 +301,48 @@ def run_complex(
         "Random": RandomAgent(env.action_space_size, seed=config.EVAL_SEED),
     }
 
-    results = _evaluate_all(agents, fresh_env, env_cfg.max_steps, temperature)
+    replay_path = os.path.join(PROJECT_ROOT, "complex_eval_episode.json")
+    if os.path.exists(replay_path):
+        os.remove(replay_path)
+
+    replay_cfg = ComplexEnvConfig(
+        n_floors=env_cfg.n_floors,
+        n_robots=env_cfg.n_robots,
+        n_elevators=env_cfg.n_elevators,
+        n_tasks=env_cfg.n_tasks,
+        total_task_budget=env_cfg.total_task_budget,
+        max_steps=env_cfg.max_steps,
+        p_elevator_delay=env_cfg.p_elevator_delay,
+        p_breakdown=env_cfg.p_breakdown,
+        breakdown_duration=env_cfg.breakdown_duration,
+        p_new_task=env_cfg.p_new_task,
+        obs_mode="full",
+    )
+
+    def replay_env() -> ComplexBuildingEnv:
+        return ComplexBuildingEnv(config=replay_cfg, seed=config.EVAL_SEED)
+
+    results = _evaluate_all(
+        agents,
+        fresh_env,
+        env_cfg.max_steps,
+        temperature,
+        record_episode_path=replay_path,
+        record_agent_name="MultiAgent-Q",
+        record_env_fn=replay_env,
+        record_agent_factory=lambda evaluated_agent: _FullStateReplayAgent(evaluated_agent, env_cfg),
+    )
     _print_comparison(results)
     _plot(stats_path, None, variant)
+
+    if os.path.exists(replay_path):
+        try:
+            print("Launching replay renderer...")
+            EpisodeReplayRenderer(replay_path).run(autoplay=True)
+        except RuntimeError as exc:
+            print(f"Skipping replay renderer: {exc}")
+    else:
+        print("No successful episode was recorded, so replay is skipped.")
 
 
 # --- Entry point -----------------------------------------------------------
