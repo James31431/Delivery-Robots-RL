@@ -68,15 +68,28 @@ def _evaluate_all(
     agents: Dict[str, Any],
     fresh_env_fn: Callable[[], Any],
     max_steps: int,
+    temperature: Optional[float] = None,
+    record_episode_path: Optional[str] = None,
+    record_agent_name: Optional[str] = None,
+    record_env_fn: Optional[Callable[[], Any]] = None,
+    record_agent_factory: Optional[Callable[[Any], Any]] = None,
 ) -> Dict[str, Dict[str, float]]:
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in agents.items():
         print(f"\nEvaluating {name}...")
+        episode_path = record_episode_path if name == record_agent_name else None
+        eval_env = fresh_env_fn()
+        if episode_path is not None and record_env_fn is not None and record_agent_factory is not None:
+            eval_env = record_env_fn()
+            agent = record_agent_factory(agent)
         results[name] = evaluate_agent(
-            fresh_env_fn(),
+            eval_env,
             agent,
             episodes=config.NUM_EVALUATION_EPISODES,
             max_steps=max_steps,
+            temperature=temperature,
+            record_episode_path=episode_path,
+            record_successful_episode_only=episode_path is not None,
         )
     return results
 
@@ -103,27 +116,6 @@ def _plot(stats_path: str, optimal_reward: Optional[float], env_name: str) -> No
         optimal_reward=optimal_reward,
     )
     print(f"Saved training curves to {plot_path}")
-
-
-def _record_and_replay_episode(
-    env: Any,
-    agent: Any,
-    max_steps: int,
-    record_path: str,
-) -> None:
-    print(f"\nRecording a single evaluation episode to {record_path}...")
-    evaluate_agent(
-        env,
-        agent,
-        episodes=1,
-        max_steps=max_steps,
-        record_episode_path=record_path,
-    )
-    try:
-        print("Launching replay renderer...")
-        EpisodeReplayRenderer(record_path).run(autoplay=True)
-    except RuntimeError as exc:
-        print(f"Skipping replay renderer: {exc}")
 
 
 class _FullStateReplayAgent:
@@ -198,7 +190,7 @@ class _FullStateReplayAgent:
 
 # --- Pipelines -------------------------------------------------------------
 
-def run_simple() -> None:
+def run_simple(temperature: Optional[float] = None) -> None:
     """Pipeline against SimpleBuildingEnv: Q-Learning vs Random vs Optimal."""
     env = SimpleBuildingEnv(max_steps=config.MAX_STEPS, seed=config.TRAIN_SEED)
     agent = _build_q_agent(env.action_space_size)
@@ -222,12 +214,16 @@ def run_simple() -> None:
         "Optimal": OptimalAgent(env.action_space_size),
     }
 
-    results = _evaluate_all(agents, fresh_env, config.MAX_STEPS)
+    results = _evaluate_all(agents, fresh_env, config.MAX_STEPS, temperature)
     _print_comparison(results)
     _plot(stats_path, results["Optimal"]["average_reward"], "simple")
 
 
-def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
+def run_complex(
+    temperature: Optional[float] = None,
+    use_memory: bool = False,
+    use_linear: bool = False,
+) -> None:
     """Pipeline against ComplexBuildingEnv with per-robot partial observability.
 
     Uses ``obs_mode='per_robot'`` so each robot's observation is a small
@@ -305,9 +301,9 @@ def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
         "Random": RandomAgent(env.action_space_size, seed=config.EVAL_SEED),
     }
 
-    results = _evaluate_all(agents, fresh_env, env_cfg.max_steps)
-    _print_comparison(results)
-    _plot(stats_path, None, variant)
+    replay_path = os.path.join(PROJECT_ROOT, "complex_eval_episode.json")
+    if os.path.exists(replay_path):
+        os.remove(replay_path)
 
     replay_cfg = ComplexEnvConfig(
         n_floors=env_cfg.n_floors,
@@ -322,14 +318,31 @@ def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
         p_new_task=env_cfg.p_new_task,
         obs_mode="full",
     )
-    replay_env = ComplexBuildingEnv(config=replay_cfg, seed=config.EVAL_SEED)
-    replay_path = os.path.join(PROJECT_ROOT, "complex_eval_episode.json")
-    _record_and_replay_episode(
-        replay_env,
-        _FullStateReplayAgent(agent, env_cfg),
+
+    def replay_env() -> ComplexBuildingEnv:
+        return ComplexBuildingEnv(config=replay_cfg, seed=config.EVAL_SEED)
+
+    results = _evaluate_all(
+        agents,
+        fresh_env,
         env_cfg.max_steps,
-        replay_path,
+        temperature,
+        record_episode_path=replay_path,
+        record_agent_name="MultiAgent-Q",
+        record_env_fn=replay_env,
+        record_agent_factory=lambda evaluated_agent: _FullStateReplayAgent(evaluated_agent, env_cfg),
     )
+    _print_comparison(results)
+    _plot(stats_path, None, variant)
+
+    if os.path.exists(replay_path):
+        try:
+            print("Launching replay renderer...")
+            EpisodeReplayRenderer(replay_path).run(autoplay=True)
+        except RuntimeError as exc:
+            print(f"Skipping replay renderer: {exc}")
+    else:
+        print("No successful episode was recorded, so replay is skipped.")
 
 
 # --- Entry point -----------------------------------------------------------
@@ -358,12 +371,23 @@ def main() -> None:
              "(LinearMultiAgentQ) instead of the tabular shared Q-table; "
              "saves under the 'complex_linear' artifacts.",
     )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="If set, evaluate with Boltzmann/softmax action selection at this "
+             "temperature (e.g. 2.0) instead of greedy argmax.",
+    )
     args = parser.parse_args()
 
     if args.env == "simple":
-        run_simple()
+        run_simple(temperature=args.temperature)
     else:
-        run_complex(use_memory=args.memory, use_linear=args.linear)
+        run_complex(
+            temperature=args.temperature,
+            use_memory=args.memory,
+            use_linear=args.linear,
+        )
 
 
 if __name__ == "__main__":

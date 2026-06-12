@@ -563,6 +563,9 @@ class EpisodeReplayRenderer:
         pygame.draw.rect(self._screen, COMPLEX_PANEL, (0, 0, self.geometry.width, self.geometry.top_panel_height))
         episode = self._payload.get("episode", 1)
         step_number = int(frame.get("step", self._index + 1))
+        cumulative_reward = 0.0
+        for item in self._trajectory[: self._index + 1]:
+            cumulative_reward += float(item.get("reward", 0.0))
         self._draw_text("Episode Replay", 24, 16)
         self._draw_text(
             f"Episode {episode} | step {step_number}/{len(self._trajectory) - 1}",
@@ -579,8 +582,15 @@ class EpisodeReplayRenderer:
             small=True,
         )
         self._draw_text(
-            f"Done {bool(frame.get('done', False))}",
+            f"Cumulative {cumulative_reward:.2f}",
             470,
+            52,
+            SUCCESS if cumulative_reward >= 0 else COMPLEX_BROKEN,
+            small=True,
+        )
+        self._draw_text(
+            f"Done {bool(frame.get('done', False))}",
+            650,
             52,
             COMPLEX_MUTED,
             small=True,
@@ -589,7 +599,7 @@ class EpisodeReplayRenderer:
         if isinstance(info, dict):
             self._draw_text(
                 f"Success {bool(info.get('success', False))}",
-                580,
+                760,
                 52,
                 SUCCESS if info.get("success") else COMPLEX_MUTED,
                 small=True,
