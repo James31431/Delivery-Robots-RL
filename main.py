@@ -26,6 +26,7 @@ import config
 from environment.complex_env import ComplexBuildingEnv, ComplexEnvConfig
 from environment.simple_env import SimpleBuildingEnv
 from rl.baselines import OptimalAgent, RandomAgent
+from rl.linear_agent import LinearMultiAgentQ, make_per_robot_featurizer
 from rl.multi_agent_tabular import MultiAgentTabularQ
 from rl.q_learning_agent import QLearningAgent
 from rl.train import train_agent
@@ -134,7 +135,7 @@ def run_simple() -> None:
     _plot(stats_path, results["Optimal"]["average_reward"], "simple")
 
 
-def run_complex() -> None:
+def run_complex(use_memory: bool = False, use_linear: bool = False) -> None:
     """Pipeline against ComplexBuildingEnv with per-robot partial observability.
 
     Uses ``obs_mode='per_robot'`` so each robot's observation is a small
@@ -143,21 +144,53 @@ def run_complex() -> None:
     config but emits a flat action int — the env decodes it into per-robot
     actions internally. OptimalAgent is intentionally omitted (hand-coded
     for SimpleBuildingEnv's state shape).
-    """
-    env_cfg = ComplexEnvConfig(obs_mode="per_robot", max_steps=500)
-    env = ComplexBuildingEnv(config=env_cfg, seed=config.TRAIN_SEED)
-    agent = MultiAgentTabularQ(
-        per_robot_action_size=env.per_robot_action_size,
-        n_robots=env_cfg.n_robots,
-        learning_rate=config.LEARNING_RATE,
-        discount_factor=config.DISCOUNT_FACTOR,
-        epsilon=config.EPSILON,
-        epsilon_decay=config.EPSILON_DECAY,
-        min_epsilon=config.MIN_EPSILON,
-        seed=config.TRAIN_SEED,
-    )
 
-    print("Training MultiAgentTabularQ on ComplexBuildingEnv (per-robot obs)...")
+    ``use_memory=True`` enables ``include_last_action`` (1-step action memory).
+    ``use_linear=True`` swaps the tabular shared Q-table for a linear
+    function approximator (``LinearMultiAgentQ``) over a one-hot feature
+    encoding of the same per-robot observation.
+
+    Artifacts are namespaced per combination (``complex``, ``complex_mem``,
+    ``complex_linear``, ``complex_linear_mem``) so variants never clobber each
+    other and can be compared side by side.
+    """
+    variant = "complex"
+    if use_linear:
+        variant += "_linear"
+    if use_memory:
+        variant += "_mem"
+
+    env_cfg = ComplexEnvConfig(obs_mode="per_robot", max_steps=500, include_last_action=use_memory)
+    env = ComplexBuildingEnv(config=env_cfg, seed=config.TRAIN_SEED)
+    if use_linear:
+        featurize, n_features = make_per_robot_featurizer(env_cfg)
+        agent = LinearMultiAgentQ(
+            featurize=featurize,
+            n_features=n_features,
+            per_robot_action_size=env.per_robot_action_size,
+            n_robots=env_cfg.n_robots,
+            learning_rate=0.05,   # NOT config.LEARNING_RATE (0.3 diverges with FA)
+            discount_factor=config.DISCOUNT_FACTOR,
+            epsilon=config.EPSILON,
+            epsilon_decay=config.EPSILON_DECAY,
+            min_epsilon=config.MIN_EPSILON,
+            seed=config.TRAIN_SEED,
+        )
+        print("Training LinearMultiAgentQ on ComplexBuildingEnv (per-robot obs)...")
+        print(f"  n_features={n_features}, lr=0.05")
+    else:
+        agent = MultiAgentTabularQ(
+            per_robot_action_size=env.per_robot_action_size,
+            n_robots=env_cfg.n_robots,
+            learning_rate=config.LEARNING_RATE,
+            discount_factor=config.DISCOUNT_FACTOR,
+            epsilon=config.EPSILON,
+            epsilon_decay=config.EPSILON_DECAY,
+            min_epsilon=config.MIN_EPSILON,
+            seed=config.TRAIN_SEED,
+        )
+        print("Training MultiAgentTabularQ on ComplexBuildingEnv (per-robot obs)...")
+
     print(
         f"  per_robot_action_size={env.per_robot_action_size}, "
         f"flat_action_space_size={env.flat_action_space_size}, "
@@ -170,7 +203,7 @@ def run_complex() -> None:
         max_steps=env_cfg.max_steps,
     )
 
-    stats_path = _save_artifacts(agent, stats, "complex")
+    stats_path = _save_artifacts(agent, stats, variant)
 
     def fresh_env() -> ComplexBuildingEnv:
         return ComplexBuildingEnv(config=env_cfg, seed=config.EVAL_SEED)
@@ -182,7 +215,7 @@ def run_complex() -> None:
 
     results = _evaluate_all(agents, fresh_env, env_cfg.max_steps)
     _print_comparison(results)
-    _plot(stats_path, None, "complex")
+    _plot(stats_path, None, variant)
 
 
 # --- Entry point -----------------------------------------------------------
@@ -197,12 +230,26 @@ def main() -> None:
         default=DEFAULT_ENV,
         help=f"Which environment to use (default: {DEFAULT_ENV}).",
     )
+    parser.add_argument(
+        "--memory",
+        action="store_true",
+        help="(complex env only) append each robot's last action to its "
+             "observation and save under the 'complex_mem' artifacts, "
+             "leaving the memoryless 'complex' baseline intact.",
+    )
+    parser.add_argument(
+        "--linear",
+        action="store_true",
+        help="(complex env only) use the linear function approximator "
+             "(LinearMultiAgentQ) instead of the tabular shared Q-table; "
+             "saves under the 'complex_linear' artifacts.",
+    )
     args = parser.parse_args()
 
     if args.env == "simple":
         run_simple()
     else:
-        run_complex()
+        run_complex(use_memory=args.memory, use_linear=args.linear)
 
 
 if __name__ == "__main__":

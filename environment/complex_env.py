@@ -39,6 +39,7 @@ DIR_DOWN = 2
 # Sentinels
 NOT_INSIDE = -1
 NO_TASK = -1
+NO_ACTION = -1
 
 
 @dataclass
@@ -63,6 +64,13 @@ class ComplexEnvConfig:
     # "per_robot" returns a tuple of per-robot local observations (a POMDP),
     # which makes the observation space small enough for tabular methods.
     obs_mode: str = "full"
+
+    # 1-step memory: append each robot's previous action to its per-robot
+    # observation, turning the memoryless reactive policy into a 1-step-history
+    # policy. Only affects obs_mode="per_robot". Multiplies the observation
+    # space by per_robot_action_size, but disambiguates the aliased states
+    # responsible for the stall/oscillation loops under greedy evaluation.
+    include_last_action: bool = False
 
     # Reward weights
     reward_delivery: float = 100.0
@@ -167,6 +175,7 @@ class ComplexBuildingEnv:
                 "floor": self._rng.randrange(self.cfg.n_floors),
                 "inside_elevator": NOT_INSIDE,
                 "carrying_task": NO_TASK,
+                "last_action": NO_ACTION,
             }
             for _ in range(self.cfg.n_robots)
         ]
@@ -271,6 +280,9 @@ class ComplexBuildingEnv:
                     best_dist = d
             obs.append(best_pickup)
             obs.append(-1)
+
+        if self.cfg.include_last_action:
+            obs.append(r["last_action"])
         return tuple(obs)
 
     def to_vector(self) -> np.ndarray:
@@ -343,6 +355,7 @@ class ComplexBuildingEnv:
         per_robot = self._to_per_robot_actions(action)
         for robot_idx, a in enumerate(per_robot):
             reward += self._apply_robot_action(robot_idx, a)
+            self.robots[robot_idx]["last_action"] = a
 
         reward += self._tick_elevators()
         self._spawn_step()
